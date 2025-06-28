@@ -2,8 +2,6 @@ import numpy as np
 import os
 from datetime import datetime
 from configs.tita_constraint_config import TitaConstraintRoughCfg, TitaConstraintRoughCfgPPO
-from configs.tita_flat_config import TitaFlatCfg, TitaFlatCfgPPO
-from configs.tita_rough_config import TitaRoughCfg, TitaRoughCfgPPO
 from envs.no_constrains_legged_robot import Tita
 
 from global_config import ROOT_DIR, ENVS_DIR
@@ -32,8 +30,6 @@ def train(args):
 if __name__ == '__main__':
 
     task_registry.register("tita_constraint",LeggedRobot,TitaConstraintRoughCfg(),TitaConstraintRoughCfgPPO())
-    task_registry.register("tita_flat", Tita, TitaFlatCfg(), TitaFlatCfgPPO())
-    task_registry.register("tita_rough", Tita, TitaRoughCfg(), TitaRoughCfgPPO())
 
     args = get_args()
     train(args)

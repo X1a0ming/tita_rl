@@ -11,8 +11,6 @@ import numpy as np
 import torch
 import copy
 from modules import ActorCriticRMA,ActorCriticBarlowTwins
-from configs.tita_flat_config import TitaFlatCfg, TitaFlatCfgPPO
-from configs.tita_rough_config import TitaRoughCfg, TitaRoughCfgPPO
 from envs.no_constrains_legged_robot import Tita
 
 def export_policy_as_onnx(args):
@@ -78,7 +76,5 @@ def convert_onnx_to_engine(engine_path):
 
 
 if __name__ == '__main__':
-    task_registry.register("tita_flat", Tita, TitaFlatCfg(), TitaFlatCfgPPO())
-    task_registry.register("tita_rough", Tita, TitaRoughCfg(), TitaRoughCfgPPO())
     args = get_args()
     export_policy_as_onnx(args)
