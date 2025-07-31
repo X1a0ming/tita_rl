@@ -96,9 +96,6 @@ nvidia-smi
 [isaacgym-installation](https://developer.nvidia.com/isaac-gym/download)  
 
 
-#### 1.5. 安装rsl_rl (PPO implementation)  
-Clone https://github.com/leggedrobotics/rsl_rl  
- `cd rsl_rl && git checkout v1.0.2 && pip install -e .` 
 
 ## 2. 测试环境
 
