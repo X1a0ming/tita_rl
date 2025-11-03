@@ -3,17 +3,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from modules.actor_critic import ActorCriticRMA
+from modules.actor_critic import ActorCriticBarlowTwins
 from runner.rollout_storage import RolloutStorageWithCost
 from utils import unpad_trajectories
 
 class NP3O:
-    actor_critic: ActorCriticRMA
+    actor_critic: ActorCriticBarlowTwins
     def __init__(self,
                  actor_critic,
-                 depth_encoder,
-                 depth_encoder_paras,
-                 depth_actor,
+                #  depth_encoder,
+                #  depth_encoder_paras,
+                #  depth_actor,
                  k_value,
                  num_learning_epochs=1,
                  num_mini_batches=1,
@@ -288,11 +288,11 @@ class NP3O:
    
         return mean_value_loss,mean_cost_value_loss,mean_viol_loss,mean_surrogate_loss,mean_imitation_loss
     
-    def update_depth_actor(self, actions_student_batch, actions_teacher_batch):
-        if self.if_depth:
-            depth_actor_loss = (actions_teacher_batch.detach() - actions_student_batch).norm(p=2, dim=1).mean()
-            self.depth_actor_optimizer.zero_grad()
-            depth_actor_loss.backward()
-            nn.utils.clip_grad_norm_(self.depth_actor.parameters(), self.max_grad_norm)
-            self.depth_actor_optimizer.step()
-            return depth_actor_loss.item()
+    # def update_depth_actor(self, actions_student_batch, actions_teacher_batch):
+    #     if self.if_depth:
+    #         depth_actor_loss = (actions_teacher_batch.detach() - actions_student_batch).norm(p=2, dim=1).mean()
+    #         self.depth_actor_optimizer.zero_grad()
+    #         depth_actor_loss.backward()
+    #         nn.utils.clip_grad_norm_(self.depth_actor.parameters(), self.max_grad_norm)
+    #         self.depth_actor_optimizer.step()
+    #         return depth_actor_loss.item()
