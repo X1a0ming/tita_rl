@@ -19,6 +19,7 @@ import cv2
 # config
 from configs import LeggedRobotCfg
 from global_config import ROOT_DIR
+from utils.utils import random_quat
 
 class LeggedRobot(BaseTask):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
@@ -43,8 +44,8 @@ class LeggedRobot(BaseTask):
         self._parse_cfg(self.cfg)
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
-        # self.resize_transform = torchvision.transforms.Resize((self.cfg.depth.resized[1], self.cfg.depth.resized[0]), 
-        #                                                       interpolation=torchvision.transforms.InterpolationMode.BICUBIC)
+        self.resize_transform = torchvision.transforms.Resize((self.cfg.depth.resized[1], self.cfg.depth.resized[0]), 
+                                                              interpolation=torchvision.transforms.InterpolationMode.BICUBIC)
         if not self.headless:
             self.set_camera(self.cfg.viewer.pos, self.cfg.viewer.lookat)
 
@@ -59,34 +60,7 @@ class LeggedRobot(BaseTask):
 
     #------------ enviorment core ----------------
     def _init_buffers(self):
-        """ Initialize torch tensors which will contain simulation states and processed quantities
-            isaac gym order:
-                0 FL_hip_joint 3
-                1 FL_thigh_joint 4
-                2 FL_calf_joint 5
-                3 FR_hip_joint 0 
-                4 FR_thigh_joint 1
-                5 FR_calf_joint 2 
-                6 RL_hip_joint 9 
-                7 RL_thigh_joint 10
-                8 RL_calf_joint 11
-                9 RR_hip_joint 6 
-                10 RR_thigh_joint 7
-                11 RR_calf_joint 8
-            unitree go2 sdk order:
-                3 FR_hip_joint 0
-                4 FR_thigh_joint 1
-                5 FR_calf_joint 2
-                0 FL_hip_joint 3
-                1 FL_thigh_joint 4
-                2 FL_calf_joint 5
-                9 RR_hip_joint 6
-                10 RR_thigh_joint 7
-                11 RR_calf_joint 8
-                6 RL_hip_joint 9
-                7 RL_thigh_joint 10
-                8 RL_calf_joint 11
-        """
+
   
         # get gym GPU state tensors
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
@@ -115,7 +89,7 @@ class LeggedRobot(BaseTask):
                               0:3]
 
         
-        self.force_sensor_tensor = gymtorch.wrap_tensor(force_sensor_tensor).view(self.num_envs, 4, 6) # for feet only, see create_env()
+        self.force_sensor_tensor = gymtorch.wrap_tensor(force_sensor_tensor).view(self.num_envs, 2, 6) # for feet only, see create_env()
         self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3) # shape: num_envs, num_bodies, xyz axis
 
         # initialize some data used later on
@@ -140,10 +114,12 @@ class LeggedRobot(BaseTask):
         self.kp_factor = (kp_str_rng[1] - kp_str_rng[0]) * torch.rand(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False) + kp_str_rng[0]
         self.kd_factor = (kd_str_rng[1] - kd_str_rng[0]) * torch.rand(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False) + kd_str_rng[0]
 
+        self.disturbance = torch.zeros(self.num_envs, self.num_bodies, 3, dtype=torch.float, device=self.device, requires_grad=False)
+
         if self.cfg.env.history_encoding:
              self.obs_history_buf = torch.zeros(self.num_envs, self.cfg.env.history_len, self.cfg.env.n_proprio, device=self.device, dtype=torch.float)
         self.action_history_buf = torch.zeros(self.num_envs, self.cfg.env.history_len, self.num_dofs, device=self.device, dtype=torch.float)
-        self.contact_buf = torch.zeros(self.num_envs, self.cfg.env.contact_buf_len, 4, device=self.device, dtype=torch.float)
+        self.contact_buf = torch.zeros(self.num_envs, self.cfg.env.contact_buf_len, 2, device=self.device, dtype=torch.float)
 
         self.commands = torch.zeros(self.num_envs, self.cfg.commands.num_commands, dtype=torch.float, device=self.device, requires_grad=False) # x vel, y vel, yaw vel, heading
         self.commands_scale = torch.tensor([self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel], device=self.device, requires_grad=False,) # TODO change this
@@ -177,11 +153,11 @@ class LeggedRobot(BaseTask):
                     print(f"PD gain of joint {name} were not defined, setting them to zero")
         self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
 
-        # if self.cfg.depth.use_camera:
-        #     self.depth_buffer = torch.zeros(self.num_envs,  
-        #                                     self.cfg.depth.buffer_len, 
-        #                                     self.cfg.depth.resized[1], 
-        #                                     self.cfg.depth.resized[0]).to(self.device)
+        if self.cfg.depth.use_camera:
+            self.depth_buffer = torch.zeros(self.num_envs,  
+                                            self.cfg.depth.buffer_len, 
+                                            self.cfg.depth.resized[1], 
+                                            self.cfg.depth.resized[0]).to(self.device)
             
         self.lag_buffer = torch.zeros(self.num_envs,self.cfg.domain_rand.lag_timesteps,self.num_actions,device=self.device,requires_grad=False)
 
@@ -226,7 +202,7 @@ class LeggedRobot(BaseTask):
         self.num_dofs = len(self.dof_names)
         feet_names = [s for s in body_names if self.cfg.asset.foot_name in s]
 
-        for s in ["FR_foot", "FL_foot", "RR_foot", "RL_foot"]:
+        for s in ["left_leg_4", "right_leg_4"]:
             feet_idx = self.gym.find_asset_rigid_body_index(robot_asset, s)
             sensor_pose = gymapi.Transform(gymapi.Vec3(0.0, 0.0, 0.0))
             self.gym.create_asset_force_sensor(robot_asset, feet_idx, sensor_pose)
@@ -269,7 +245,7 @@ class LeggedRobot(BaseTask):
             self.gym.set_actor_rigid_body_properties(env_handle, actor_handle, body_props, recomputeInertia=True)
             self.envs.append(env_handle)
             self.actor_handles.append(actor_handle)
-            # self.attach_camera(i, env_handle, actor_handle)
+            self.attach_camera(i, env_handle, actor_handle)
             self.mass_params_tensor[i, :] = torch.from_numpy(mass_params).to(self.device).to(torch.float)
 
         if self.cfg.domain_rand.randomize_friction:
@@ -311,10 +287,10 @@ class LeggedRobot(BaseTask):
 
     def reindex(self,tensor):
         #sim2real purpose
-        return tensor[:,[4,5,6,7,0,1,2,3,12,13,14,15,8,9,10,11]]
+        return tensor[:,[4,5,6,7,0,1,2,3]]
     
     def reindex_feet(self,tensor):
-        return tensor[:,[1,0,3,2]]
+        return tensor[:,[1,0]]
 
     def step(self, actions):
         """ Apply actions, simulate, call self.post_physics_step()
@@ -349,15 +325,15 @@ class LeggedRobot(BaseTask):
         if self.privileged_obs_buf is not None:
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
 
-        # if self.cfg.depth.use_camera and self.global_counter % self.cfg.depth.update_interval == 0:
-        #     self.extras["depth"] = self.depth_buffer[:, -2]  # have already selected last one
-        # else:
-        #     self.extras["depth"] = None
+        if self.cfg.depth.use_camera and self.global_counter % self.cfg.depth.update_interval == 0:
+            self.extras["depth"] = self.depth_buffer[:, -2]  # have already selected last one
+        else:
+            self.extras["depth"] = None
  
         return self.obs_buf,self.privileged_obs_buf,self.rew_buf,self.cost_buf,self.reset_buf, self.extras
     
     def compute_observations(self):
-        self.dof_pos[:,[3, 7, 11, 15]]  = 0 
+        self.dof_pos[:,[3, 7]]  = 0 
 
         obs_buf =torch.cat((self.base_ang_vel  * self.obs_scales.ang_vel,
                             self.projected_gravity,
@@ -374,9 +350,9 @@ class LeggedRobot(BaseTask):
                                torch.ones(3) * noise_scales.gravity * noise_level,
                                torch.zeros(3),
                                torch.ones(
-                                   16) * noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos,
+                                   8) * noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos,
                                torch.ones(
-                                   16) * noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel,
+                                   8) * noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel,
                                #torch.ones(4) * noise_scales.contact_states * noise_level,
                                #torch.zeros(4),
                                torch.zeros(self.num_actions),
@@ -449,6 +425,13 @@ class LeggedRobot(BaseTask):
         self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
 
+        # update foot_velocities and foot_positions
+        self.foot_velocities = self.rigid_body_states[:,
+                               self.feet_indices,
+                               7:10]
+        self.foot_positions = self.rigid_body_states[:, self.feet_indices,
+                              0:3]
+        
         #self.roll, self.pitch, self.yaw = euler_from_quaternion(self.base_quat)
         contact = self.contact_forces[:, self.feet_indices, 2] > 1.
         self.contact_filt = torch.logical_or(contact, self.last_contacts) 
@@ -463,7 +446,7 @@ class LeggedRobot(BaseTask):
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
         self.reset_idx(env_ids)
 
-        # self.update_depth_buffer()
+        self.update_depth_buffer()
         self.compute_observations()
 
         self.last_actions[:] = self.actions[:]
@@ -475,73 +458,73 @@ class LeggedRobot(BaseTask):
             self._draw_debug_vis()
 
     #------------- Cameras --------------
-    # def attach_camera(self, i, env_handle, actor_handle):
-    #     if self.cfg.depth.use_camera:
-    #         config = self.cfg.depth
-    #         camera_props = gymapi.CameraProperties()
-    #         camera_props.width = self.cfg.depth.original[0]
-    #         camera_props.height = self.cfg.depth.original[1]
-    #         camera_props.enable_tensors = True
-    #         camera_horizontal_fov = self.cfg.depth.horizontal_fov
-    #         camera_props.horizontal_fov = camera_horizontal_fov
+    def attach_camera(self, i, env_handle, actor_handle):
+        if self.cfg.depth.use_camera:
+            config = self.cfg.depth
+            camera_props = gymapi.CameraProperties()
+            camera_props.width = self.cfg.depth.original[0]
+            camera_props.height = self.cfg.depth.original[1]
+            camera_props.enable_tensors = True
+            camera_horizontal_fov = self.cfg.depth.horizontal_fov
+            camera_props.horizontal_fov = camera_horizontal_fov
 
-    #         camera_handle = self.gym.create_camera_sensor(env_handle, camera_props)
-    #         self.cam_handles.append(camera_handle)
+            camera_handle = self.gym.create_camera_sensor(env_handle, camera_props)
+            self.cam_handles.append(camera_handle)
 
-    #         local_transform = gymapi.Transform()
+            local_transform = gymapi.Transform()
 
-    #         camera_position = np.copy(config.position)
-    #         camera_angle = np.random.uniform(config.angle[0],config.angle[1])
+            camera_position = np.copy(config.position)
+            camera_angle = np.random.uniform(config.angle[0],config.angle[1])
 
-    #         local_transform.p = gymapi.Vec3(*camera_position)
-    #         local_transform.r = gymapi.Quat.from_euler_zyx(0, np.radians(camera_angle), 0)
-    #         root_handle = self.gym.get_actor_root_rigid_body_handle(env_handle, actor_handle)
+            local_transform.p = gymapi.Vec3(*camera_position)
+            local_transform.r = gymapi.Quat.from_euler_zyx(0, np.radians(camera_angle), 0)
+            root_handle = self.gym.get_actor_root_rigid_body_handle(env_handle, actor_handle)
 
-    #         self.gym.attach_camera_to_body(camera_handle, env_handle, root_handle, local_transform, gymapi.FOLLOW_TRANSFORM)
+            self.gym.attach_camera_to_body(camera_handle, env_handle, root_handle, local_transform, gymapi.FOLLOW_TRANSFORM)
 
-    # def update_depth_buffer(self):
-    #     if not self.cfg.depth.use_camera:
-    #         return 
-    #     # not meet the requirement of update
-    #     if self.global_counter % self.cfg.depth.update_interval != 0:
-    #         return 
-    #     self.gym.step_graphics(self.sim) # required to render in headless mode
-    #     self.gym.render_all_camera_sensors(self.sim)
-    #     self.gym.start_access_image_tensors(self.sim)
+    def update_depth_buffer(self):
+        if not self.cfg.depth.use_camera:
+            return 
+        # not meet the requirement of update
+        if self.global_counter % self.cfg.depth.update_interval != 0:
+            return 
+        self.gym.step_graphics(self.sim) # required to render in headless mode
+        self.gym.render_all_camera_sensors(self.sim)
+        self.gym.start_access_image_tensors(self.sim)
 
-    #     for i in range(self.num_envs):
-    #         depth_image_ = self.gym.get_camera_image_gpu_tensor(self.sim, 
-    #                                                             self.envs[i], 
-    #                                                             self.cam_handles[i],
-    #                                                             gymapi.IMAGE_DEPTH)
-    #         depth_image = gymtorch.wrap_tensor(depth_image_)
-    #         depth_image = self.process_depth_image(depth_image, i)
+        for i in range(self.num_envs):
+            depth_image_ = self.gym.get_camera_image_gpu_tensor(self.sim, 
+                                                                self.envs[i], 
+                                                                self.cam_handles[i],
+                                                                gymapi.IMAGE_DEPTH)
+            depth_image = gymtorch.wrap_tensor(depth_image_)
+            depth_image = self.process_depth_image(depth_image, i)
 
-    #         init_flag = self.episode_length_buf <= 1
-    #         if init_flag[i]:
-    #             self.depth_buffer[i] = torch.stack([depth_image] * self.cfg.depth.buffer_len, dim=0)
-    #         else:
-    #             self.depth_buffer[i] = torch.cat([self.depth_buffer[i, 1:], depth_image.to(self.device).unsqueeze(0)], dim=0)
+            init_flag = self.episode_length_buf <= 1
+            if init_flag[i]:
+                self.depth_buffer[i] = torch.stack([depth_image] * self.cfg.depth.buffer_len, dim=0)
+            else:
+                self.depth_buffer[i] = torch.cat([self.depth_buffer[i, 1:], depth_image.to(self.device).unsqueeze(0)], dim=0)
         
-    #     self.gym.end_access_image_tensors(self.sim)
+        self.gym.end_access_image_tensors(self.sim)
 
-    # def normalize_depth_image(self, depth_image):
-    #     depth_image = depth_image * -1
-    #     depth_image = (depth_image - self.cfg.depth.near_clip) / (self.cfg.depth.far_clip - self.cfg.depth.near_clip)  - 0.5
-    #     return depth_image
+    def normalize_depth_image(self, depth_image):
+        depth_image = depth_image * -1
+        depth_image = (depth_image - self.cfg.depth.near_clip) / (self.cfg.depth.far_clip - self.cfg.depth.near_clip)  - 0.5
+        return depth_image
     
-    # def process_depth_image(self, depth_image, env_id):
-    #     # These operations are replicated on the hardware
-    #     depth_image = self.crop_depth_image(depth_image)
-    #     depth_image += self.cfg.depth.dis_noise * 2 * (torch.rand(1)-0.5)[0]
-    #     depth_image = torch.clip(depth_image, -self.cfg.depth.far_clip, -self.cfg.depth.near_clip)
-    #     depth_image = self.resize_transform(depth_image[None, :]).squeeze()
-    #     depth_image = self.normalize_depth_image(depth_image)
-    #     return depth_image
+    def process_depth_image(self, depth_image, env_id):
+        # These operations are replicated on the hardware
+        depth_image = self.crop_depth_image(depth_image)
+        depth_image += self.cfg.depth.dis_noise * 2 * (torch.rand(1)-0.5)[0]
+        depth_image = torch.clip(depth_image, -self.cfg.depth.far_clip, -self.cfg.depth.near_clip)
+        depth_image = self.resize_transform(depth_image[None, :]).squeeze()
+        depth_image = self.normalize_depth_image(depth_image)
+        return depth_image
 
-    # def crop_depth_image(self, depth_image):
-    #     # crop 30 pixels from the left and right and and 20 pixels from bottom and return croped image
-    #     return depth_image[:-2, 4:-4]
+    def crop_depth_image(self, depth_image):
+        # crop 30 pixels from the left and right and and 20 pixels from bottom and return croped image
+        return depth_image[:-2, 4:-4]
 
     def set_camera(self, position, lookat):
         """ Set camera position and direction
@@ -568,6 +551,9 @@ class LeggedRobot(BaseTask):
             
         if self.cfg.domain_rand.push_robots and  (self.common_step_counter % self.cfg.domain_rand.push_interval == 0):
             self._push_robots()
+        
+        if self.cfg.domain_rand.disturbance and (self.common_step_counter % self.cfg.domain_rand.disturbance_interval == 0):
+            self._disturbance_robots()
     
     def _process_rigid_shape_props(self, props, env_id):
         """ Callback allowing to store/change/randomize the rigid shape properties of each environment.
@@ -673,8 +659,8 @@ class LeggedRobot(BaseTask):
             actions = self._low_pass_action_filter(actions)
 
         #pd controller
-        actions_scaled = actions[:, :16] * self.cfg.control.action_scale
-        actions_scaled[:, [0, 4, 8, 12]] *= self.cfg.control.hip_scale_reduction
+        actions_scaled = actions[:, :8] * self.cfg.control.action_scale
+        actions_scaled[:, [0, 4]] *= self.cfg.control.hip_scale_reduction
         # actions_scaled[:, [3, 7, 11, 15]] *= 20.0
 
         # if self.cfg.domain_rand.randomize_lag_timesteps:
@@ -704,7 +690,7 @@ class LeggedRobot(BaseTask):
         else:
             raise NameError(f"Unknown controller type: {control_type}")
         # torques[:,[3, 7, 11, 15]] = self.kp_factor[:,[3, 7, 11, 15]] * 2*(actions_scaled[:,[3, 7, 11, 15]] - self.dof_vel[:,[3, 7, 11, 15]]) - self.kd_factor[:,[3, 7, 11, 15]] * 0.01*(self.dof_vel[:,[3, 7, 11, 15]] - self.last_dof_vel[:,[3, 7, 11, 15]])/self.sim_params.dt
-        torques[:,[3, 7, 11, 15]] = self.kp_factor[:,[3, 7, 11, 15]]  * 10*(actions_scaled[:,[3, 7, 11, 15]]) - 0.5*self.kd_factor[:,[3, 7, 11, 15]] *(self.dof_vel[:,[3, 7, 11, 15]])
+        torques[:,[3, 7]] = self.kp_factor[:,[3, 7]]  * 10*(joint_pos_target[:,[3, 7]]) - 0.5*self.kd_factor[:,[3, 7]] *(self.dof_vel[:,[3, 7]])
         # torques[:,[3, 7, 11, 15]] = 0.5*self.kd_factor[:,[3, 7, 11, 15]]*(joint_pos_target[:,[3, 7, 11, 15]] - self.dof_vel[:,[3, 7, 11, 15]])
 
         torques = torques * self.motor_strength
@@ -826,7 +812,13 @@ class LeggedRobot(BaseTask):
             self.root_states[env_ids, :3] += self.env_origins[env_ids]
         # base velocities
         self.root_states[env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
+        # random ori
+        # self.root_states[env_ids, 3:7] = random_quat(torch_rand_float(0, 1, (len(env_ids), 4), device=self.device))
 
+        # Use a fixed initial rotation
+        self.root_states[env_ids, 3:7] = self.base_init_state[3:7]        # random height
+        
+        self.root_states[env_ids, 2:3] += torch_rand_float(0, 0.2, (len(env_ids), 1), device=self.device)
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(self.root_states),
@@ -852,8 +844,8 @@ class LeggedRobot(BaseTask):
         """ Creates simulation, terrain and evironments
         """
         self.up_axis_idx = 2 # 2 for z, 1 for y -> adapt gravity accordingly
-        # if self.cfg.depth.use_camera:
-        #     self.graphics_device_id = self.sim_device_id # required in headless mode
+        if self.cfg.depth.use_camera:
+            self.graphics_device_id = self.sim_device_id # required in headless mode
         self.sim = self.gym.create_sim(self.sim_device_id, self.graphics_device_id, self.physics_engine, self.sim_params)
         mesh_type = self.cfg.terrain.mesh_type
         if mesh_type in ['heightfield', 'trimesh']:
@@ -1034,11 +1026,11 @@ class LeggedRobot(BaseTask):
                 sphere_pose = gymapi.Transform(gymapi.Vec3(x, y, z), r=None)
                 gymutil.draw_lines(sphere_geom, self.gym, self.viewer, self.envs[i], sphere_pose)
         # draw depth image with window created by cv2
-        # if self.cfg.depth.use_camera:
-        #     window_name = "Depth Image"
-        #     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        #     cv2.imshow("Depth Image", self.depth_buffer[self.lookat_id, -1].cup().numpy() + 0.5)
-        #     cv2.waitKey(1) 
+        if self.cfg.depth.use_camera:
+            window_name = "Depth Image"
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.imshow("Depth Image", self.depth_buffer[self.lookat_id, -1].cup().numpy() + 0.5)
+            cv2.waitKey(1) 
 
     def _init_height_points(self):
         """ Returns points at which the height measurments are sampled (in base frame)
@@ -1100,6 +1092,13 @@ class LeggedRobot(BaseTask):
         max_vel = self.cfg.domain_rand.max_push_vel_xy
         self.root_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device) # lin vel x/y
         self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.root_states))
+    
+    def _disturbance_robots(self):
+        """ Random add disturbance force to the robots.
+        """
+        disturbance = torch_rand_float(self.cfg.domain_rand.disturbance_range[0], self.cfg.domain_rand.disturbance_range[1], (self.num_envs, 3), device=self.device)
+        self.disturbance[:, 0, :] = disturbance
+        self.gym.apply_rigid_body_force_tensors(self.sim, forceTensor=gymtorch.unwrap_tensor(self.disturbance), space=gymapi.CoordinateSpace.LOCAL_SPACE)
 
     def _resample_commands(self, env_ids):
         """ Randommly select commands of some environments
@@ -1247,7 +1246,7 @@ class LeggedRobot(BaseTask):
         
     def _reward_stand_still(self):
         # Penalize motion at zero commands
-        return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1) * (torch.norm(self.commands[:, :2], dim=1) < 0.1)
+        return torch.sum(torch.abs(self.dof_pos[:, [0,1,2,4,5,6]] - self.default_dof_pos[:, [0,1,2,4,5,6]]), dim=1) * (torch.norm(self.commands[:, :2], dim=1) < 0.1)
 
     def _reward_feet_contact_forces(self):
         # penalize high contact forces
@@ -1281,23 +1280,68 @@ class LeggedRobot(BaseTask):
         #     footvel_in_body_frame[:, i, :] = quat_rotate_inverse(self.base_quat, cur_footvel_translated[:, i, :])
         #     foot_xy_vel_err[:, i, :] = self.commands[:, :2] - footvel_in_body_frame[:, i, :2]
         # foot_xy_vel_err_norm =  torch.norm(foot_xy_vel_err[:,:,:2],dim=-1)
-        rew_foot_clearance = torch.sum(torch.square(target_height - foot_height,dim=-1))
+        rew_foot_clearance = torch.sum(torch.square(target_height - foot_height),dim=-1)
         # rew_foot_clearance = torch.sum(torch.square(target_height - foot_height) * foot_xy_vel_err_norm,dim=-1)
         # rew_foot_clearance = torch.sum(torch.square(target_height - foot_height) * com_xy_vel_err,dim=-1)
         return rew_foot_clearance
 
-    # def _reward_foot_relative_x(self):
-    #     cur_footpos_translated = self.foot_positions - self.root_states[:, 0:3].unsqueeze(1)
-    #     footpos_in_body_frame = torch.zeros(self.num_envs, 4, 3, device=self.device)
-    #     footpos_x_err_in_body_frame = torch.zeros(self.num_envs, 4, device=self.device)
-    #     for i in range(4):
-    #         footpos_in_body_frame[:, i, :] = quat_rotate_inverse(self.base_quat, cur_footpos_translated[:, i, :])
-    #         if i < 2:
-    #             footpos_x_err_in_body_frame[:, i] = 0.27 - footpos_in_body_frame[:, i, 0] 
-    #         else:
-    #             footpos_x_err_in_body_frame[:, i] = -0.27 -  footpos_in_body_frame[:, i, 0] 
-    #     rew_foot_relative_x = torch.sum(torch.square(footpos_x_err_in_body_frame),dim=-1)
-    #     return rew_foot_relative_x
+    def _reward_tracking_lin_vel_up(self):
+        # Tracking of linear velocity commands (xy axes)
+        lin_vel_error = torch.sum(torch.square(self.commands[:, :2] - self.base_lin_vel[:, :2]), dim=1)
+        return torch.exp(-lin_vel_error/self.cfg.rewards.tracking_sigma)*torch.clamp(-self.projected_gravity[:,2],0,1)
+    
+    def _reward_tracking_ang_vel_up(self):
+        # Tracking of angular velocity commands (yaw) 
+        ang_vel_error = torch.square(self.commands[:, 2] - self.base_ang_vel[:, 2])
+        return torch.exp(-ang_vel_error/self.cfg.rewards.tracking_sigma)*torch.clamp(-self.projected_gravity[:,2],0,1)
+
+    def _reward_lin_vel_z_up(self):
+        # Penalize z axis base linear velocity
+        return torch.square(self.base_lin_vel[:, 2])*torch.clamp(-self.projected_gravity[:,2],0,1)
+
+    def _reward_ang_vel_xy_up(self):
+        # Penalize xy axes base angular velocity
+        return torch.sum(torch.square(self.base_ang_vel[:, :2]), dim=1)*torch.clamp(-self.projected_gravity[:,2],0,1)
+
+    def _reward_orientation_up(self):
+        # Penalize non flat base orientation
+        return torch.sum(torch.square(self.projected_gravity[:, :2]), dim=1)*torch.clamp(-self.projected_gravity[:,2],0,1)
+
+    def _reward_base_height_up(self):
+        # Penalize base height away from target
+        # base_height = self._get_base_heights()
+        base_height = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1)
+        return torch.square(base_height - self.cfg.rewards.base_height_target)*torch.clamp(-self.projected_gravity[:,2],0,1)
+
+    def _reward_collision_up(self):
+        # Penalize collisions on selected bodies
+        return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.sum(1.*(torch.norm(self.contact_forces[:, self.penalised_contact_indices, :], dim=-1) > 0.1), dim=1)
+
+    def _reward_feet_contact_forces(self):
+        # penalize high contact forces
+        return torch.clamp(-self.projected_gravity[:,2],0,1)*torch.sum((torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) -  500).clip(min=0.), dim=1)
+
+    def _reward_stumble_up(self):
+        # Penalize feet hitting vertical surfaces
+        return torch.clamp(-self.projected_gravity[:,2],0,1)*(torch.any(torch.norm(self.contact_forces[:, self.feet_indices, :2], dim=2) >\
+             5 *torch.abs(self.contact_forces[:, self.feet_indices, 2]), dim=1))
+
+    def _reward_upward(self):
+        return -self.projected_gravity[:,2]
+
+    def _reward_stand_nice(self):
+        return torch.sum(torch.abs(self.dof_pos[:, [0, 1, 2, 4, 5, 6]] - self.default_dof_pos[:, [0, 1, 2, 4, 5, 6]]), dim=1) * (1 - self.projected_gravity[:,2]) * (torch.norm(self.commands[:, :2], dim=1) < 0.1)
+    
+    def _reward_foot_relative_x(self):
+        cur_footpos_translated = self.foot_positions - self.root_states[:, 0:3].unsqueeze(1)
+        footpos_in_body_frame = torch.zeros(self.num_envs, 2, 3, device=self.device)
+        footpos_x_err_in_body_frame = torch.zeros(self.num_envs, 2, device=self.device)
+        for i in range(2):
+            footpos_in_body_frame[:, i, :] = quat_rotate_inverse(self.base_quat, cur_footpos_translated[:, i, :])
+            footpos_x_err_in_body_frame[:, i] = 0 - footpos_in_body_frame[:, i, 0] 
+
+        rew_foot_relative_x = torch.sum(torch.square(footpos_x_err_in_body_frame),dim=-1)
+        return rew_foot_relative_x
 
     # def _reward_foot_vel_z(self):
         # return torch.sum(torch.square(self.foot_velocities[:,:,2]), dim=-1)
@@ -1309,31 +1353,6 @@ class LeggedRobot(BaseTask):
     #         wheel_vel_err[:,i] = self.base_lin_vel[:, 0] - wheel_vel[:, i]*0.0948
     #     wheel_vel_err_sum_square = torch.sum(torch.square(wheel_vel_err), dim=1)
     #     return torch.exp(-wheel_vel_err_sum_square/self.cfg.rewards.tracking_sigma)
-
-    # def _reward_foot_relative_z(self):
-    #     cur_footpos_translated = self.foot_positions - self.root_states[:, 0:3].unsqueeze(1)
-    #     footpos_in_body_frame = torch.zeros(self.num_envs, 4, 3, device=self.device)
-    #     footpos_z_err_in_body_frame = torch.zeros(self.num_envs, 1, device=self.device)
-    #     for i in range(4):
-    #         footpos_in_body_frame[:, i, :] = quat_rotate_inverse(self.base_quat, cur_footpos_translated[:, i, :])
-    #         if i == 0:
-    #             footpos_z_err_in_body_frame[:, 0] = -0.15 - footpos_in_body_frame[:, i, 2] 
-    #         # if i == 3:
-    #         #     footpos_z_err_in_body_frame[:, 1] = -0.15 - footpos_in_body_frame[:, i, 2] 
-    #     rew_foot_relative_z = torch.sum(torch.square(footpos_z_err_in_body_frame),dim=-1)
-    #     return rew_foot_relative_z
-
-    # def _reward_foot_wheel_zero_vel(self):
-    #     wheel_vel = self.dof_vel[:,3]
-    #     rew_foot_wheel_zero_vel = torch.sum(torch.square(wheel_vel), dim=-1)
-    #     return rew_foot_wheel_zero_vel
-
-    # def _reward_foot_lift(self):
-    #     left_leg_calf = self.dof_pos[:,2] + 2.2
-    #     rew_foot_lift = torch.sum(torch.square(left_leg_calf), dim=-1)
-    #     # return torch.exp(-rew_foot_lift/self.cfg.rewards.tracking_sigma)
-    #     return rew_foot_lift
-
     
     #------------ cost functions----------------
     def _cost_torque_limit(self):
@@ -1369,6 +1388,15 @@ class LeggedRobot(BaseTask):
         # Penalize feet hitting vertical surfaces
         return 1.*(torch.sum(1.*(torch.norm(self.contact_forces[:, self.feet_indices, :2], dim=2) >\
              5 *torch.abs(self.contact_forces[:, self.feet_indices, 2])), dim=1) > 0.0)
+    
+    def _cost_stumble_up(self):
+        # Penalize feet hitting vertical surfaces
+        return torch.clamp(-self.projected_gravity[:,2],0,1)*(torch.sum(1.*(torch.norm(self.contact_forces[:, self.feet_indices, :2], dim=2) >\
+             5 *torch.abs(self.contact_forces[:, self.feet_indices, 2])), dim=1) > 0.0)
+    
+    def _cost_feet_contact_forces_up(self):
+        # penalize high contact forces
+        return torch.clamp(-self.projected_gravity[:,2],0,1)*(torch.sum(1.*(torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > self.cfg.rewards.max_contact_force), dim=1) > 0.0)
 
     def _cost_base_height(self):
         # Penalize base height away from target

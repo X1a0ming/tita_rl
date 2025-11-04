@@ -1,10 +1,9 @@
-from configs.wheeled_titatit_constraint_him import WheeledTitatitConstraintHimRoughCfg, WheeledTitatitConstraintHimRoughCfgPPO
+from configs.tita_constraint_config import TitaConstraintRoughCfg, TitaConstraintRoughCfgPPO
+
 import cv2
 import os
 
 from isaacgym import gymapi
-from envs import LeggedRobot
-from modules import *
 from utils import  get_args, export_policy_as_jit, task_registry, Logger
 from configs import *
 from utils.helpers import class_to_dict
@@ -14,6 +13,16 @@ import torch
 from global_config import ROOT_DIR
 
 from PIL import Image as im
+
+
+
+
+from envs.no_constrains_legged_robot import Tita
+from envs import *
+from export_policy_as_onnx  import *
+import argparse
+
+
 
 def delete_files_in_directory(directory_path):
    try:
@@ -26,10 +35,10 @@ def delete_files_in_directory(directory_path):
    except OSError:
      print("Error occurred while deleting files.")
 
-def play(args):
+def play_on_constraint_policy_runner(args):
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     # override some parameters for testing
-    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 1)
+    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 100)
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 5
     env_cfg.terrain.curriculum = False
@@ -61,7 +70,7 @@ def play(args):
                                                       **policy_cfg_dict)
     print(policy)
     #model_dict = torch.load(os.path.join(ROOT_DIR, 'model_4000_phase2_hip.pt'))
-    model_dict = torch.load(os.path.join(ROOT_DIR, 'model_6000.pt'))
+    model_dict = torch.load(os.path.join(ROOT_DIR, 'tita_example_10000.pt'))
     policy.load_state_dict(model_dict['model_state_dict'])
     policy = policy.to(env.device)
     policy.save_torch_jit_policy('model.pt',env.device)
@@ -126,9 +135,16 @@ def play(args):
     print("feet air reward",feet_air_time/num_frames)
 
     video.release()
-if __name__ == '__main__':
-    task_registry.register("wheeled_titatit",LeggedRobot,WheeledTitatitConstraintHimRoughCfg(),WheeledTitatitConstraintHimRoughCfgPPO())
 
-    RECORD_FRAMES = True
+
+if __name__ == '__main__':
+    EXPORT_POLICY = True
+    RECORD_FRAMES = False
+    MOVE_CAMERA = False
+
+    # Register tasks
+    task_registry.register("tita_constraint", LeggedRobot, TitaConstraintRoughCfg(), TitaConstraintRoughCfgPPO())
+
     args = get_args()
-    play(args)
+
+    play_on_constraint_policy_runner(args)
