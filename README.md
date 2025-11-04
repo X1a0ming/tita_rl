@@ -17,6 +17,9 @@
 
 [TITATIT-Quadruped Mode](https://github.com/DDTRobot/titatit_rl)
 
+以及 titatit四轮足模式训练环境
+[TITATIT-Quadruped-Wheeled Mode](https://github.com/DDTRobot/quadruped-wheel-titatit-rl)
+
 **参考环境**
 
 | Environment        | Brief info   |
