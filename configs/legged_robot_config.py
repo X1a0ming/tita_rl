@@ -11,7 +11,7 @@ class LeggedRobotCfg(BaseConfig):
 
         num_observations = n_proprio + n_scan + history_len*n_proprio + n_priv_latent 
         num_privileged_obs = None # if not None a priviledge_obs_buf will be returned by step() (critic obs for assymetric training). None is returned otherwise 
-        num_actions = 16
+        num_actions = 8
         env_spacing = 3.  # not used with heightfields/trimeshes 
         send_timeouts = True # send time out information to the algorithm
         episode_length_s = 20 # episode length in seconds
@@ -24,28 +24,28 @@ class LeggedRobotCfg(BaseConfig):
     class cost:
         num_costs = 1
     
-    # class depth:
-    #     use_camera = False
-    #     camera_num_envs = 192
-    #     camera_terrain_num_rows = 10
-    #     camera_terrain_num_cols = 20
+    class depth:
+        use_camera = False
+        camera_num_envs = 192
+        camera_terrain_num_rows = 10
+        camera_terrain_num_cols = 20
 
-    #     position = [0.27, 0, 0.03]  # front camera
-    #     angle = [-5, 5]  # positive pitch down
+        position = [0.27, 0, 0.03]  # front camera
+        angle = [-5, 5]  # positive pitch down
 
-    #     update_interval = 5  # 5 works without retraining, 8 worse
+        update_interval = 5  # 5 works without retraining, 8 worse
 
-    #     original = (106, 60)
-    #     resized = (87, 58)
-    #     horizontal_fov = 87
-    #     buffer_len = 2
+        original = (106, 60)
+        resized = (87, 58)
+        horizontal_fov = 87
+        buffer_len = 2
         
-    #     near_clip = 0
-    #     far_clip = 2
-    #     dis_noise = 0.0
+        near_clip = 0
+        far_clip = 2
+        dis_noise = 0.0
         
-    #     scale = 1
-    #     invert = True
+        scale = 1
+        invert = True
 
     class terrain:
         mesh_type = 'trimesh'  # "heightfield" # none, plane, heightfield or trimesh
@@ -126,7 +126,7 @@ class LeggedRobotCfg(BaseConfig):
         default_dof_drive_mode = 3  # see GymDofDriveModeFlags (0 is none, 1 is pos tgt, 2 is vel tgt, 3 effort)
         self_collisions = 0  # 1 to disable, 0 to enable...bitwise filter
         replace_cylinder_with_capsule = False  # replace collision cylinders with capsules, leads to faster/more stable simulation
-        flip_visual_attachments = True  # Some .obj meshes must be flipped from y-up to z-up
+        flip_visual_attachments = False  # Some .obj meshes must be flipped from y-up to z-up
 
         density = 0.001
         angular_damping = 0.
@@ -216,7 +216,7 @@ class LeggedRobotCfg(BaseConfig):
         lookat = [11., 5, 3.]  # [m]
 
     class sim:
-        dt = 0.005
+        dt = 0.0025
         substeps = 1
         gravity = [0., 0., -9.81]  # [m/s^2]
         up_axis = 1  # 0 is y, 1 is z
@@ -272,13 +272,13 @@ class LeggedRobotCfgPPO(BaseConfig):
         priv_reg_coef_schedual = [0, 0.1, 2000, 3000]
         priv_reg_coef_schedual_resume = [0, 0.1, 0, 1]
     
-    # class depth_encoder:
-    #     if_depth = LeggedRobotCfg.depth.use_camera
-    #     depth_shape = LeggedRobotCfg.depth.resized
-    #     buffer_len = LeggedRobotCfg.depth.buffer_len
-    #     hidden_dims = 512
-    #     learning_rate = 1.e-3
-    #     num_steps_per_env = LeggedRobotCfg.depth.update_interval * 24
+    class depth_encoder:
+        if_depth = LeggedRobotCfg.depth.use_camera
+        depth_shape = LeggedRobotCfg.depth.resized
+        buffer_len = LeggedRobotCfg.depth.buffer_len
+        hidden_dims = 512
+        learning_rate = 1.e-3
+        num_steps_per_env = LeggedRobotCfg.depth.update_interval * 24
 
     class runner:
         policy_class_name = 'ActorCriticRMA'
@@ -289,7 +289,7 @@ class LeggedRobotCfgPPO(BaseConfig):
 
         # logging
         save_interval = 100 # check for potential saves every this many iterations
-        experiment_name = 'wheeled_titatit'
+        experiment_name = 'rough_a1'
         run_name = ''
         # load and resume
         resume = False
